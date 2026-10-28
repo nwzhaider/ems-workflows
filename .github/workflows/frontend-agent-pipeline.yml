@@ -101,7 +101,14 @@ jobs:
       - name: Create feature branch
         run: |
           BRANCH="feature/${{ inputs.jira_key }}"
-          git checkout -b "${BRANCH}" 2>/dev/null || git checkout "${BRANCH}"
+          if git ls-remote --exit-code --heads origin "${BRANCH}" > /dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists — resetting to ${{ inputs.base_branch }}"
+            git checkout "${BRANCH}"
+            git reset --hard origin/${{ inputs.base_branch }}
+            git push origin "${BRANCH}" --force
+          else
+            git checkout -b "${BRANCH}"
+          fi
           echo "BRANCH=${BRANCH}" >> $GITHUB_ENV
 
       # ─────────────────────────────────────────────
