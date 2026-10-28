@@ -3,7 +3,7 @@ name: Frontend Agent Pipeline (Reusable)
 # ──────────────────────────────────────────────────────────
 # Central reusable pipeline for React / TypeScript frontends.
 # Called by: ems-frontend
-# Repo:      e-axon-systems/ems-workflows
+# Repo:      nwzhaider/ems-workflows
 # ──────────────────────────────────────────────────────────
 
 on:
@@ -11,14 +11,6 @@ on:
     inputs:
       jira_key:
         description: 'Jira Key (e.g. ECS-203)'
-        required: true
-        type: string
-      task_summary:
-        description: 'Task Title / Summary'
-        required: true
-        type: string
-      task_details:
-        description: 'Requirements / Endpoints / Details'
         required: true
         type: string
       node_version:
@@ -36,6 +28,12 @@ on:
         required: true
       REPO_ACCESS_TOKEN_FOR_AI_AGENT:
         required: true
+      JIRA_BASE_URL:
+        required: true
+      JIRA_EMAIL:
+        required: true
+      JIRA_API_TOKEN:
+        required: true
 
 permissions:
   contents: write
@@ -47,7 +45,50 @@ jobs:
 
     steps:
       # ─────────────────────────────────────────────
-      # SETUP
+      # SETUP: Fetch Jira ticket details
+      # ─────────────────────────────────────────────
+      - name: Fetch Jira ticket
+        id: jira
+        run: |
+          RESPONSE=$(curl -s \
+            -u "${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -H "Accept: application/json" \
+            "${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/${{ inputs.jira_key }}")
+
+          SUMMARY=$(echo "${RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])" 2>/dev/null || echo "${{ inputs.jira_key }}")
+
+          DESCRIPTION=$(echo "${RESPONSE}" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          desc = data['fields'].get('description')
+          if not desc:
+              print('No description provided.')
+          elif isinstance(desc, str):
+              print(desc)
+          else:
+              # Atlassian Document Format (ADF) — extract plain text
+              parts = []
+              for block in desc.get('content', []):
+                  for inline in block.get('content', []):
+                      if inline.get('type') == 'text':
+                          parts.append(inline.get('text', ''))
+              print(' '.join(parts))
+          " 2>/dev/null || echo "No description provided.")
+
+          {
+            echo "summary<<__SUMMARY_EOF__"
+            echo "${SUMMARY}"
+            echo "__SUMMARY_EOF__"
+            echo "description<<__DESC_EOF__"
+            echo "${DESCRIPTION}"
+            echo "__DESC_EOF__"
+          } >> $GITHUB_OUTPUT
+
+          echo "Jira Summary: ${SUMMARY}"
+          echo "Jira Description: ${DESCRIPTION}"
+
+      # ─────────────────────────────────────────────
+      # SETUP: Checkout and create feature branch
       # ─────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -72,10 +113,10 @@ jobs:
           prompt: |
             You are implementing a Jira task for the ems-frontend React + TypeScript application.
 
-            Jira Key:      ${{ inputs.jira_key }}
-            Task Summary:  ${{ inputs.task_summary }}
-            Task Details:
-            ${{ inputs.task_details }}
+            Jira Key:     ${{ inputs.jira_key }}
+            Summary:      ${{ steps.jira.outputs.summary }}
+            Description:
+            ${{ steps.jira.outputs.description }}
 
             Project conventions:
             - Framework:   React 18, TypeScript
@@ -88,7 +129,7 @@ jobs:
             - Shared types/interfaces live alongside their components or in src/api/
 
             Instructions:
-            1. Implement the UI changes described in the task details.
+            1. Implement the UI changes described in the task description.
             2. Add or update API client functions in src/api/ for any new or changed backend endpoints.
             3. Define TypeScript interfaces for request/response shapes that exactly match the backend DTOs.
             4. Use existing MUI components and follow the visual style of adjacent components.
@@ -104,7 +145,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Review the full diff for Jira task ${{ inputs.jira_key }} (${{ inputs.task_summary }}) and fix any issues.
+            Review the full diff for Jira task ${{ inputs.jira_key }} (${{ steps.jira.outputs.summary }}) and fix any issues.
 
             Review checklist:
             1. TypeScript type mismatches or missing interface fields.
@@ -144,7 +185,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "feat(${{ inputs.jira_key }}): ${{ inputs.task_summary }} [skip ci]"
+            git commit -m "feat(${{ inputs.jira_key }}): ${{ steps.jira.outputs.summary }} [skip ci]"
             git push origin "${BRANCH}" --set-upstream
             echo "Pushed branch: ${BRANCH}"
           fi
