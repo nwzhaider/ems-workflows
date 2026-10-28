@@ -126,6 +126,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          show_full_output: true
           prompt: |
             You are implementing a Jira task for the ${{ inputs.service_name }} Spring Boot microservice.
 
@@ -177,6 +178,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          show_full_output: true
           prompt: |
             Review the full diff for Jira task ${{ inputs.jira_key }} (${{ steps.jira.outputs.summary }}) and fix any issues.
 
