@@ -1,0 +1,146 @@
+name: Frontend Agent Pipeline (Reusable)
+
+# ──────────────────────────────────────────────────────────
+# Central reusable pipeline for React / TypeScript frontends.
+# Called by: ems-frontend
+# Repo:      e-axon-systems/ems-workflows
+# ──────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        description: 'Jira Key (e.g. ECS-203)'
+        required: true
+        type: string
+      task_summary:
+        description: 'Task Title / Summary'
+        required: true
+        type: string
+      task_details:
+        description: 'Requirements / Endpoints / Details'
+        required: true
+        type: string
+      node_version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '20'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      REPO_ACCESS_TOKEN_FOR_AI_AGENT:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  agent-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────────
+      # SETUP
+      # ─────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REPO_ACCESS_TOKEN_FOR_AI_AGENT }}
+          fetch-depth: 0
+
+      - name: Create feature branch
+        run: |
+          BRANCH="feature/${{ inputs.jira_key }}"
+          git checkout -b "${BRANCH}" 2>/dev/null || git checkout "${BRANCH}"
+          echo "BRANCH=${BRANCH}" >> $GITHUB_ENV
+
+      # ─────────────────────────────────────────────
+      # STAGE 1: Frontend Agent
+      # ─────────────────────────────────────────────
+      - name: Stage 1 — Frontend Implementation
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are implementing a Jira task for the ems-frontend React + TypeScript application.
+
+            Jira Key:      ${{ inputs.jira_key }}
+            Task Summary:  ${{ inputs.task_summary }}
+            Task Details:
+            ${{ inputs.task_details }}
+
+            Project conventions:
+            - Framework:   React 18, TypeScript
+            - UI Library:  MUI (Material UI) with Emotion
+            - Auth:        Auth0 (@auth0/auth0-react)
+            - Build:       react-scripts (Create React App)
+            - Source root: src/
+            - API calls live in src/api/
+            - Components live in src/EMS/ (organised by feature/domain)
+            - Shared types/interfaces live alongside their components or in src/api/
+
+            Instructions:
+            1. Implement the UI changes described in the task details.
+            2. Add or update API client functions in src/api/ for any new or changed backend endpoints.
+            3. Define TypeScript interfaces for request/response shapes that exactly match the backend DTOs.
+            4. Use existing MUI components and follow the visual style of adjacent components.
+            5. Do NOT modify any backend Java files.
+            6. After implementing, run: npm run build
+            7. Fix any TypeScript or build errors before finishing.
+
+      # ─────────────────────────────────────────────
+      # STAGE 2: Code Review & Fix
+      # ─────────────────────────────────────────────
+      - name: Stage 2 — Code Review and Fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review the full diff for Jira task ${{ inputs.jira_key }} (${{ inputs.task_summary }}) and fix any issues.
+
+            Review checklist:
+            1. TypeScript type mismatches or missing interface fields.
+            2. API endpoint paths or HTTP methods that do not match what the backend declares.
+            3. Missing null/undefined guards on API response fields.
+            4. Missing loading and error states on new data-fetching components.
+            5. Any unused imports that will cause lint/build warnings.
+
+            Apply all fixes directly.
+            After fixing, run: npm run build to confirm a clean build.
+
+      # ─────────────────────────────────────────────
+      # STAGE 3: Verification
+      # ─────────────────────────────────────────────
+      - name: Stage 3 — Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Stage 3 — Install dependencies
+        run: npm ci
+
+      - name: Stage 3 — Build verification
+        run: node --max-old-space-size=4096 node_modules/.bin/react-scripts build
+        env:
+          CI: false
+
+      # ─────────────────────────────────────────────
+      # STAGE 4: Commit & Push
+      # ─────────────────────────────────────────────
+      - name: Stage 4 — Commit and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "feat(${{ inputs.jira_key }}): ${{ inputs.task_summary }} [skip ci]"
+            git push origin "${BRANCH}" --set-upstream
+            echo "Pushed branch: ${BRANCH}"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN_FOR_AI_AGENT }}

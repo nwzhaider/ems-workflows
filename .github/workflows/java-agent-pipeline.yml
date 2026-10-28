@@ -1,0 +1,168 @@
+name: Java Agent Pipeline (Reusable)
+
+# ──────────────────────────────────────────────────────────
+# Central reusable pipeline for all Spring Boot microservices.
+# Called by: ems, ems-web-api, ems-cron, ems-download-bill
+# Repo:      e-axon-systems/ems-workflows
+# ──────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        description: 'Jira Key (e.g. ECS-203)'
+        required: true
+        type: string
+      task_summary:
+        description: 'Task Title / Summary'
+        required: true
+        type: string
+      task_details:
+        description: 'Requirements / Endpoints / Details'
+        required: true
+        type: string
+      base_package:
+        description: 'Root Java package (e.g. com.eaxon.ems)'
+        required: true
+        type: string
+      service_name:
+        description: 'Microservice name (e.g. ems-web-api)'
+        required: true
+        type: string
+      java_version:
+        description: 'Java version to use'
+        required: false
+        type: string
+        default: '21'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      REPO_ACCESS_TOKEN_FOR_AI_AGENT:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  agent-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ─────────────────────────────────────────────
+      # SETUP
+      # ─────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.REPO_ACCESS_TOKEN_FOR_AI_AGENT }}
+          fetch-depth: 0
+
+      - name: Create feature branch
+        run: |
+          BRANCH="feature/${{ inputs.jira_key }}"
+          git checkout -b "${BRANCH}" 2>/dev/null || git checkout "${BRANCH}"
+          echo "BRANCH=${BRANCH}" >> $GITHUB_ENV
+
+      # ─────────────────────────────────────────────
+      # STAGE 1: Backend Agent
+      # ─────────────────────────────────────────────
+      - name: Stage 1 — Backend Implementation
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are implementing a Jira task for the ${{ inputs.service_name }} Spring Boot microservice.
+
+            Jira Key:      ${{ inputs.jira_key }}
+            Task Summary:  ${{ inputs.task_summary }}
+            Task Details:
+            ${{ inputs.task_details }}
+
+            Project conventions:
+            - Language:    Java ${{ inputs.java_version }}, Spring Boot 3.3.x
+            - Build tool:  Gradle (./gradlew)
+            - Base package: ${{ inputs.base_package }}
+            - Source root:  src/main/java/${{ inputs.base_package != '' && replace(inputs.base_package, '.', '/') || 'com/eaxon' }}/
+            - Controllers → controller/ or controller/v2/
+            - Services    → service/ or service/<domain>/
+            - DTOs        → dto/ or dto/v2/
+            - Types/Filters→ types/
+            - Repositories → repository/
+
+            Instructions:
+            1. Implement ONLY backend changes: Java DTOs, Controllers, Services, Repositories, SQL/schema.
+            2. Follow existing naming, annotation, and structural conventions exactly.
+            3. Do NOT create or modify any frontend, HTML, CSS, or JavaScript files.
+            4. After implementing, run: ./gradlew compileJava
+            5. Fix any compile errors before finishing.
+
+      # ─────────────────────────────────────────────
+      # STAGE 2: Capture API Contract
+      # ─────────────────────────────────────────────
+      - name: Stage 2 — Capture API Contract
+        id: contract
+        run: |
+          DIFF=$(git diff HEAD -- '*.java' \
+            | grep -E '^\+.*((@(Get|Post|Put|Delete|Patch)Mapping|@RequestBody|@PathVariable|@RequestParam|@RequestMapping)|(class|record) .*(Dto|Request|Response|Filter)|private .+ (get|set)[A-Z])' \
+            || true)
+
+          {
+            echo "api_contract<<__CONTRACT_EOF__"
+            echo "${DIFF}"
+            echo "__CONTRACT_EOF__"
+          } >> $GITHUB_OUTPUT
+
+          git diff HEAD -- '*.java' > /tmp/backend_diff.txt
+          echo "--- Captured API contract ---"
+          echo "${DIFF}"
+
+      # ─────────────────────────────────────────────
+      # STAGE 3: Code Review & Fix
+      # ─────────────────────────────────────────────
+      - name: Stage 3 — Code Review and Fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review the full diff for Jira task ${{ inputs.jira_key }} (${{ inputs.task_summary }}) and fix any issues.
+
+            Review checklist:
+            1. Missing @Valid, @NotNull, or @NotBlank on DTO fields that require validation.
+            2. Missing @PreAuthorize on new controller endpoints (match the pattern of existing endpoints in the same controller).
+            3. Incorrect return types or missing @ResponseBody / @RestController annotations.
+            4. Any compile or type errors.
+            5. Missing Lombok annotations (@Data, @RequiredArgsConstructor, etc.) compared to adjacent classes.
+
+            Apply all fixes directly.
+            After fixing, run: ./gradlew compileJava to confirm clean compile.
+
+      # ─────────────────────────────────────────────
+      # STAGE 4: Verification
+      # ─────────────────────────────────────────────
+      - name: Stage 4 — Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Stage 4 — Run Backend Tests
+        run: ./gradlew test
+
+      # ─────────────────────────────────────────────
+      # STAGE 5: Commit & Push
+      # ─────────────────────────────────────────────
+      - name: Stage 5 — Commit and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "feat(${{ inputs.jira_key }}): ${{ inputs.task_summary }} [skip ci]"
+            git push origin "${BRANCH}" --set-upstream
+            echo "Pushed branch: ${BRANCH}"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN_FOR_AI_AGENT }}
