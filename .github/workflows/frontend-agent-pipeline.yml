@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: '20'
+      base_branch:
+        description: 'Branch to create the feature branch from (e.g. uat)'
+        required: false
+        type: string
+        default: 'uat'
     secrets:
       ANTHROPIC_API_KEY:
         required: true
@@ -49,6 +54,7 @@ jobs:
         with:
           token: ${{ secrets.REPO_ACCESS_TOKEN_FOR_AI_AGENT }}
           fetch-depth: 0
+          ref: ${{ inputs.base_branch }}
 
       - name: Create feature branch
         run: |
